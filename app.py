@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from io import BytesIO
 
 st.set_page_config(page_title="Human vs Algo Market Lab", layout="wide")
 
@@ -18,22 +19,27 @@ if "market" not in st.session_state:
             "XYZ": {"price": 200.0, "history": [], "halted": False, "cb_ref": 200.0},
         },
 
-        # Risk controls
+        # Risk & regulation
         "position_limit": 500,      # shares
         "risk_budget_pct": 0.25,     # 25% of net worth
+        "short_selling_ban": False,
+        "circuit_breaker_pct": 0.10,
 
         "humans": {},
         "bots": {},
 
-        "trade_log": []
+        "trade_log": [],
+        "pnl_history": {}
     }
 
     # 10 humans
     for i in range(1, 11):
-        market["humans"][f"Human_{i}"] = {
+        name = f"Human_{i}"
+        market["humans"][name] = {
             "cash": 100000.0,
             "pos": {"ABC": 50, "XYZ": 25}
         }
+        market["pnl_history"][name] = [100000.0]
 
     # Bots
     bot_names = ["Momentum Bot", "MeanReversion Bot", "Panic Bot", "Random Bot", "Trend Bot"]
@@ -72,18 +78,22 @@ def risk_used(agent):
 # =====================================================
 # TITLE
 # =====================================================
-st.title("🤖📈 Human vs Algorithm Market Lab — Risk Controlled (Stable)")
+st.title("🤖📈 Human vs Algorithm Market Lab — Regulation & Risk")
 st.caption("📰 News moves prices immediately. ▶️ Trading reacts when you run the round.")
 
 # =====================================================
-# SIDEBAR — POLICY & RISK CONTROLS
+# SIDEBAR — POLICY, SHOCKS, REGULATION
 # =====================================================
 st.sidebar.header("🏛️ Policy & Shock Controls")
 
-selected_asset = st.sidebar.selectbox("Select Asset", ["ABC", "XYZ"])
+selected_asset = st.sidebar.selectbox(
+    "Select Asset for News",
+    ["ABC", "XYZ"],
+    key="selected_asset_for_news"
+)
 
 # -------------------------------
-# NEWS SHOCKS (APPLY IMMEDIATELY)
+# NEWS SHOCKS (IMMEDIATE)
 # -------------------------------
 if st.sidebar.button("🚨 Bad News (-10%)"):
     a = market["assets"][selected_asset]
@@ -121,8 +131,6 @@ if st.sidebar.button("🏦 Central Bank Intervention (+15% ALL)"):
         asset["halted"] = False
         asset["cb_ref"] = asset["price"]
 
-st.sidebar.divider()
-
 # Resume trading
 if st.sidebar.button("🟢 Resume All Trading"):
     for a in market["assets"]:
@@ -131,8 +139,15 @@ if st.sidebar.button("🟢 Resume All Trading"):
 
 st.sidebar.divider()
 
-# Risk controls
-st.sidebar.header("🧠 Risk Controls")
+# -------------------------------
+# REGULATIONS & RISK CONTROLS
+# -------------------------------
+st.sidebar.header("🧠 Regulations & Risk")
+
+market["short_selling_ban"] = st.sidebar.checkbox(
+    "🚫 Ban Short Selling",
+    value=market["short_selling_ban"]
+)
 
 market["position_limit"] = st.sidebar.slider(
     "Position Limit (shares per asset)",
@@ -142,6 +157,11 @@ market["position_limit"] = st.sidebar.slider(
 market["risk_budget_pct"] = st.sidebar.slider(
     "Risk Budget (% of Net Worth)",
     min_value=0.05, max_value=0.80, value=market["risk_budget_pct"], step=0.05
+)
+
+market["circuit_breaker_pct"] = st.sidebar.slider(
+    "🚨 Circuit Breaker Threshold (%)",
+    min_value=0.05, max_value=0.50, value=market["circuit_breaker_pct"], step=0.05
 )
 
 st.sidebar.divider()
@@ -180,21 +200,18 @@ for i, name in enumerate(market["humans"].keys()):
         human_orders[name] = {"asset": asset, "action": action, "qty": qty}
 
 # =====================================================
-# RUN ROUND (TRADING ONLY)
+# RUN ROUND (TRADING)
 # =====================================================
 if st.button("▶️ Run Next Market Round"):
 
     trade_log_round = []
 
-    # ----------------------------------
-    # 1. COLLECT ORDER FLOW
-    # ----------------------------------
     buy_vol = {"ABC": 0, "XYZ": 0}
     sell_vol = {"ABC": 0, "XYZ": 0}
 
-    # ----------------------------------
-    # 2. HUMAN ORDERS (WITH HARD LIMITS)
-    # ----------------------------------
+    # -------------------------------
+    # HUMAN ORDERS
+    # -------------------------------
     if not market["liquidity_freeze"]:
 
         for hname, order in human_orders.items():
@@ -210,6 +227,12 @@ if st.button("▶️ Run Next Market Round"):
             if market["assets"][asset]["halted"]:
                 trade_log_round.append([market["round"], hname, asset, action, qty, price, "BLOCKED", "HALTED"])
                 continue
+
+            # Short selling ban
+            if market["short_selling_ban"] and action == "SELL":
+                if human["pos"][asset] - qty < 0:
+                    trade_log_round.append([market["round"], hname, asset, action, qty, price, "BLOCKED", "SHORT BAN"])
+                    continue
 
             # Position limit
             new_pos = human["pos"][asset] + (qty if action == "BUY" else -qty)
@@ -239,9 +262,9 @@ if st.button("▶️ Run Next Market Round"):
 
             trade_log_round.append([market["round"], hname, asset, action, qty, price, "EXECUTED", "OK"])
 
-    # ----------------------------------
-    # 3. BOTS
-    # ----------------------------------
+    # -------------------------------
+    # BOTS
+    # -------------------------------
     for bname, bot in market["bots"].items():
         for asset in ["ABC", "XYZ"]:
             if market["assets"][asset]["halted"] or market["liquidity_freeze"]:
@@ -249,7 +272,6 @@ if st.button("▶️ Run Next Market Round"):
 
             price = market["assets"][asset]["price"]
             hist = market["assets"][asset]["history"]
-            qty = 0
 
             # Reckless 😈
             if "Reckless" in bname:
@@ -302,9 +324,9 @@ if st.button("▶️ Run Next Market Round"):
                     qty = 20; buy_vol[asset] += qty; bot["pos"][asset] += qty; bot["cash"] -= qty * price
                     trade_log_round.append([market["round"], bname, asset, "BUY", qty, price, "EXECUTED", "TREND"])
 
-    # ----------------------------------
-    # 4. PRICE FORMATION + CIRCUIT BREAKER
-    # ----------------------------------
+    # -------------------------------
+    # PRICE FORMATION + CIRCUIT BREAKER
+    # -------------------------------
     for asset in ["ABC", "XYZ"]:
         old_price = market["assets"][asset]["price"]
         market["assets"][asset]["history"].append(old_price)
@@ -316,16 +338,21 @@ if st.button("▶️ Run Next Market Round"):
         new_price = max(1.0, old_price + imbalance / 50.0)
 
         ref = market["assets"][asset]["cb_ref"]
-        if abs(new_price - ref) / ref > 0.10:
+        if abs(new_price - ref) / ref > market["circuit_breaker_pct"]:
             market["assets"][asset]["halted"] = True
         else:
             market["assets"][asset]["price"] = new_price
             market["assets"][asset]["cb_ref"] = new_price
 
-    # ----------------------------------
-    # 5. SAVE TRADE LOG
-    # ----------------------------------
+    # -------------------------------
+    # SAVE TRADE LOG
+    # -------------------------------
     market["trade_log"].extend(trade_log_round)
+
+    # Save P&L history
+    for hname, h in market["humans"].items():
+        market["pnl_history"][hname].append(net_worth(h))
+
     market["round"] += 1
 
 # =====================================================
@@ -356,7 +383,25 @@ df = pd.DataFrame(rows).sort_values("NetWorth", ascending=False)
 st.dataframe(df, use_container_width=True)
 
 # =====================================================
-# TRADE LOG
+# P&L SUMMARY
+# =====================================================
+st.subheader("📈 Team P&L Summary")
+
+pnl_rows = []
+for hname, series in market["pnl_history"].items():
+    start = series[0]
+    current = series[-1]
+    pnl_rows.append({
+        "Team": hname,
+        "Net Worth": round(current, 0),
+        "P&L": round(current - start, 0),
+        "Return %": round(100 * (current - start) / start, 2)
+    })
+
+st.dataframe(pd.DataFrame(pnl_rows), use_container_width=True)
+
+# =====================================================
+# TRADE LOG + EXPORT
 # =====================================================
 st.subheader("🧾 Trade History (Last 50)")
 
@@ -366,6 +411,19 @@ if len(market["trade_log"]) > 0:
         columns=["Round", "Agent", "Asset", "Action", "Qty", "Price", "Status", "Reason"]
     )
     st.dataframe(log_df.tail(50), use_container_width=True)
+
+    # Export to Excel
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        log_df.to_excel(writer, index=False, sheet_name="TradeLog")
+    buffer.seek(0)
+
+    st.download_button(
+        "⬇️ Download Trade Log (Excel)",
+        data=buffer,
+        file_name="trade_log.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 else:
     st.write("No trades yet.")
 
@@ -373,12 +431,15 @@ else:
 # TEACHING NOTE
 # =====================================================
 st.info("""
-Now guaranteed:
-• Click Bad News → price drops immediately
-• Click Good News → price rises immediately
-• Click Flash Crash → price crashes immediately
-• ▶️ Run Next Market Round = only trading reactions
-• Liquidity freeze works
-• Circuit breaker works
-• Risk & position limits are hard enforced
+This simulator now includes:
+• Immediate news shocks (good/bad/crash/CB)
+• Liquidity freeze
+• Circuit breakers (configurable)
+• Short-selling ban
+• Position limits
+• Risk budgets
+• Full trade log + Excel export
+• Per-team P&L tracking
+
+This is a complete Market Microstructure + Regulation + Risk Lab.
 """)
