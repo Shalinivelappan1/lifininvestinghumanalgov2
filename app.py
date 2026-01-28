@@ -13,48 +13,30 @@ if "market" not in st.session_state:
         "round": 1,
         "liquidity_freeze": False,
 
-        # Assets
         "assets": {
-            "ABC": {
-                "price": 100.0,
-                "history": [],
-                "halted": False,
-                "cb_ref": 100.0,
-                "pending_shock": 0.0,   # +0.1, -0.1, -0.25 etc
-            },
-            "XYZ": {
-                "price": 200.0,
-                "history": [],
-                "halted": False,
-                "cb_ref": 200.0,
-                "pending_shock": 0.0,
-            }
+            "ABC": {"price": 100.0, "history": [], "halted": False, "cb_ref": 100.0, "pending_shock": 0.0},
+            "XYZ": {"price": 200.0, "history": [], "halted": False, "cb_ref": 200.0, "pending_shock": 0.0},
         },
 
-        # Risk controls (defaults, adjustable from sidebar)
+        # Risk controls
         "position_limit": 500,      # shares
-        "risk_budget_pct": 0.25,     # 25%
+        "risk_budget_pct": 0.25,     # 25% of net worth
 
-        # Humans
         "humans": {},
-
-        # Bots
         "bots": {},
 
-        # Trade log
         "trade_log": []
     }
 
-    # Create 10 humans
+    # 10 humans
     for i in range(1, 11):
         market["humans"][f"Human_{i}"] = {
             "cash": 100000.0,
             "pos": {"ABC": 50, "XYZ": 25}
         }
 
-    # Normal bots
+    # Bots
     bot_names = ["Momentum Bot", "MeanReversion Bot", "Panic Bot", "Random Bot", "Trend Bot"]
-
     for b in bot_names:
         market["bots"][b] = {
             "cash": 200000.0,
@@ -72,10 +54,26 @@ if "market" not in st.session_state:
 market = st.session_state.market
 
 # =====================================================
+# HELPER FUNCTIONS
+# =====================================================
+def net_worth(agent):
+    return (
+        agent["cash"]
+        + agent["pos"]["ABC"] * market["assets"]["ABC"]["price"]
+        + agent["pos"]["XYZ"] * market["assets"]["XYZ"]["price"]
+    )
+
+def risk_used(agent):
+    return (
+        abs(agent["pos"]["ABC"] * market["assets"]["ABC"]["price"])
+        + abs(agent["pos"]["XYZ"] * market["assets"]["XYZ"]["price"])
+    )
+
+# =====================================================
 # TITLE
 # =====================================================
 st.title("🤖📈 Human vs Algorithm Market Lab — Risk Controlled")
-st.caption("10 Humans vs Bots | Hard Risk Limits | Policy Tools | Stable Version")
+st.caption("Developed by Prof.Shalini Velappan, IIM Trichy.")
 
 # =====================================================
 # SIDEBAR — POLICY & RISK CONTROLS
@@ -84,7 +82,6 @@ st.sidebar.header("🏛️ Policy & Shock Controls")
 
 selected_asset = st.sidebar.selectbox("Select Asset", ["ABC", "XYZ"])
 
-# ---- News shocks (applied next round)
 if st.sidebar.button("🚨 Bad News (-10%)"):
     market["assets"][selected_asset]["pending_shock"] = -0.10
 
@@ -96,11 +93,9 @@ if st.sidebar.button("💣 Flash Crash (-25%)"):
 
 st.sidebar.divider()
 
-# ---- Liquidity freeze
 if st.sidebar.button("🧊 Toggle Liquidity Freeze"):
     market["liquidity_freeze"] = not market["liquidity_freeze"]
 
-# ---- Central bank
 if st.sidebar.button("🏦 Central Bank Intervention (+15% ALL)"):
     for a in market["assets"]:
         market["assets"][a]["price"] *= 1.15
@@ -109,7 +104,6 @@ if st.sidebar.button("🏦 Central Bank Intervention (+15% ALL)"):
 
 st.sidebar.divider()
 
-# ---- Resume trading
 if st.sidebar.button("🟢 Resume All Trading"):
     for a in market["assets"]:
         market["assets"][a]["halted"] = False
@@ -117,28 +111,20 @@ if st.sidebar.button("🟢 Resume All Trading"):
 
 st.sidebar.divider()
 
-# ---- Risk controls
 st.sidebar.header("🧠 Risk Controls")
 
 market["position_limit"] = st.sidebar.slider(
     "Position Limit (shares per asset)",
-    min_value=100,
-    max_value=2000,
-    value=market["position_limit"],
-    step=100
+    min_value=100, max_value=2000, value=market["position_limit"], step=100
 )
 
 market["risk_budget_pct"] = st.sidebar.slider(
     "Risk Budget (% of Net Worth)",
-    min_value=0.05,
-    max_value=0.80,
-    value=market["risk_budget_pct"],
-    step=0.05
+    min_value=0.05, max_value=0.80, value=market["risk_budget_pct"], step=0.05
 )
 
 st.sidebar.divider()
 
-# ---- Reset
 if st.sidebar.button("🔁 Reset Simulation"):
     for k in list(st.session_state.keys()):
         del st.session_state[k]
@@ -166,28 +152,10 @@ cols = st.columns(5)
 for i, name in enumerate(market["humans"].keys()):
     with cols[i % 5]:
         st.markdown(f"**{name}**")
-
         asset = st.selectbox("Asset", ["ABC", "XYZ"], key=f"{name}_asset")
         action = st.radio("Action", ["HOLD", "BUY", "SELL"], horizontal=True, key=f"{name}_action")
         qty = st.number_input("Qty", min_value=0, max_value=2000, value=0, step=50, key=f"{name}_qty")
-
         human_orders[name] = {"asset": asset, "action": action, "qty": qty}
-
-# =====================================================
-# HELPER FUNCTIONS
-# =====================================================
-def net_worth(agent):
-    return (
-        agent["cash"]
-        + agent["pos"]["ABC"] * market["assets"]["ABC"]["price"]
-        + agent["pos"]["XYZ"] * market["assets"]["XYZ"]["price"]
-    )
-
-def risk_used(agent):
-    return (
-        abs(agent["pos"]["ABC"] * market["assets"]["ABC"]["price"])
-        + abs(agent["pos"]["XYZ"] * market["assets"]["XYZ"]["price"])
-    )
 
 # =====================================================
 # RUN ROUND
@@ -197,22 +165,36 @@ if st.button("▶️ Run Next Market Round"):
     trade_log_round = []
 
     # ----------------------------------
-    # 1. APPLY NEWS SHOCKS (CORRECT SIGN!)
+    # 1. APPLY NEWS SHOCKS (DOMINANT)
     # ----------------------------------
+    news_applied = {"ABC": False, "XYZ": False}
+
     for a in market["assets"]:
         shock = market["assets"][a]["pending_shock"]
         if shock != 0:
+            # Save history
+            market["assets"][a]["history"].append(market["assets"][a]["price"])
+
+            # Apply shock
             market["assets"][a]["price"] *= (1 + shock)
+
+            # Reset CB reference
+            market["assets"][a]["cb_ref"] = market["assets"][a]["price"]
+
+            # Mark news applied
+            news_applied[a] = True
+
+            # Reset shock
             market["assets"][a]["pending_shock"] = 0.0
 
     # ----------------------------------
-    # 2. COLLECT VOLUMES
+    # 2. COLLECT ORDER FLOW
     # ----------------------------------
     buy_vol = {"ABC": 0, "XYZ": 0}
     sell_vol = {"ABC": 0, "XYZ": 0}
 
     # ----------------------------------
-    # 3. HUMAN ORDERS (WITH HARD RISK CHECKS)
+    # 3. HUMAN ORDERS (WITH HARD LIMITS)
     # ----------------------------------
     if not market["liquidity_freeze"]:
 
@@ -221,7 +203,6 @@ if st.button("▶️ Run Next Market Round"):
             asset = order["asset"]
             action = order["action"]
             qty = order["qty"]
-
             price = market["assets"][asset]["price"]
 
             if qty <= 0 or action == "HOLD":
@@ -231,31 +212,28 @@ if st.button("▶️ Run Next Market Round"):
                 trade_log_round.append([market["round"], hname, asset, action, qty, price, "BLOCKED", "HALTED"])
                 continue
 
-            # ---- Position limit check
+            # Position limit
             new_pos = human["pos"][asset] + (qty if action == "BUY" else -qty)
             if abs(new_pos) > market["position_limit"]:
                 trade_log_round.append([market["round"], hname, asset, action, qty, price, "BLOCKED", "POS LIMIT"])
                 continue
 
-            # ---- Risk budget check (only for BUY)
+            # Risk limit (only for BUY)
             if action == "BUY":
-                tmp_agent = {"cash": human["cash"], "pos": human["pos"].copy()}
-                tmp_agent["pos"][asset] += qty
-
-                new_risk = risk_used(tmp_agent)
+                tmp = {"cash": human["cash"], "pos": human["pos"].copy()}
+                tmp["pos"][asset] += qty
+                new_risk = risk_used(tmp)
                 limit = market["risk_budget_pct"] * net_worth(human)
-
                 if new_risk > limit:
                     trade_log_round.append([market["round"], hname, asset, action, qty, price, "BLOCKED", "RISK LIMIT"])
                     continue
 
-            # ---- Execute
+            # Execute
             if action == "BUY":
                 buy_vol[asset] += qty
                 human["pos"][asset] += qty
                 human["cash"] -= qty * price
-
-            elif action == "SELL":
+            else:
                 sell_vol[asset] += qty
                 human["pos"][asset] -= qty
                 human["cash"] += qty * price
@@ -272,15 +250,13 @@ if st.button("▶️ Run Next Market Round"):
 
             price = market["assets"][asset]["price"]
             hist = market["assets"][asset]["history"]
-
             qty = 0
-            reason = ""
 
             # Reckless 😈
             if "Reckless" in bname:
                 qty = 200
                 if len(hist) > 0 and price < hist[-1]:
-                    qty = 400  # doubles down
+                    qty = 400
                 buy_vol[asset] += qty
                 bot["pos"][asset] += qty
                 bot["cash"] -= qty * price
@@ -296,7 +272,7 @@ if st.button("▶️ Run Next Market Round"):
                     qty = 20; sell_vol[asset] += qty; bot["pos"][asset] -= qty; bot["cash"] += qty * price
                     trade_log_round.append([market["round"], bname, asset, "SELL", qty, price, "EXECUTED", "MOM"])
 
-            # Mean Reversion
+            # Mean reversion
             if "MeanReversion" in bname:
                 ref = 100 if asset == "ABC" else 200
                 if price > 1.2 * ref:
@@ -328,9 +304,13 @@ if st.button("▶️ Run Next Market Round"):
                     trade_log_round.append([market["round"], bname, asset, "BUY", qty, price, "EXECUTED", "TREND"])
 
     # ----------------------------------
-    # 5. PRICE FORMATION + CIRCUIT BREAKER
+    # 5. PRICE FORMATION (ONLY IF NO NEWS)
     # ----------------------------------
     for asset in ["ABC", "XYZ"]:
+
+        if news_applied.get(asset, False):
+            continue
+
         old_price = market["assets"][asset]["price"]
         market["assets"][asset]["history"].append(old_price)
 
@@ -355,7 +335,7 @@ if st.button("▶️ Run Next Market Round"):
     market["round"] += 1
 
 # =====================================================
-# PRICE CHARTS
+# CHARTS
 # =====================================================
 st.subheader("📈 Price Evolution")
 
@@ -373,22 +353,18 @@ with c2:
 st.subheader("🏆 Leaderboard (Real Portfolios)")
 
 rows = []
-
 for name, h in market["humans"].items():
-    net = net_worth(h)
-    rows.append({"Agent": name, "Type": "Human", "NetWorth": round(net, 0)})
-
+    rows.append({"Agent": name, "Type": "Human", "NetWorth": round(net_worth(h), 0)})
 for name, b in market["bots"].items():
-    net = net_worth(b)
-    rows.append({"Agent": name, "Type": "Bot", "NetWorth": round(net, 0)})
+    rows.append({"Agent": name, "Type": "Bot", "NetWorth": round(net_worth(b), 0)})
 
 df = pd.DataFrame(rows).sort_values("NetWorth", ascending=False)
 st.dataframe(df, use_container_width=True)
 
 # =====================================================
-# TRADE LOG VIEW
+# TRADE LOG
 # =====================================================
-st.subheader("🧾 Trade History (Latest 50 trades)")
+st.subheader("🧾 Trade History (Last 50)")
 
 if len(market["trade_log"]) > 0:
     log_df = pd.DataFrame(
@@ -403,14 +379,12 @@ else:
 # TEACHING NOTE
 # =====================================================
 st.info("""
-This version guarantees:
-• Good news → price up
-• Bad news → price down
+Guaranteed behavior:
+• Good news → price up that round
+• Bad news → price down that round
 • Flash crash → big down move
-• Central bank → price up
-• Liquidity freeze → no trades
-• Circuit breaker → halts trading
+• Trading reacts NEXT round
+• Liquidity freeze → no trading
+• Circuit breaker → halts
 • Risk & position limits → hard blocked trades
-
-You now have a real risk-managed market system.
 """)
