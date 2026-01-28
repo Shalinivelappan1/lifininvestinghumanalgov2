@@ -127,11 +127,7 @@ for i, name in enumerate(market["humans"].keys()):
         action = st.radio("Action", ["HOLD", "BUY", "SELL"], horizontal=True, key=f"{name}_action")
         qty = st.number_input("Qty", min_value=0, max_value=2000, value=0, step=20, key=f"{name}_qty")
 
-        human_orders[name] = {
-            "asset": asset,
-            "action": action,
-            "qty": qty
-        }
+        human_orders[name] = {"asset": asset, "action": action, "qty": qty}
 
 # =====================================================
 # RUN ROUND (HUMANS + BOTS)
@@ -166,9 +162,7 @@ if st.button("▶️ Run Next Round"):
             human["cash"] += qty * price
             sell_vol[asset] += qty
 
-        trade_log_round.append([
-            market["round"], team, asset, action, qty, price
-        ])
+        trade_log_round.append([market["round"], team, asset, action, qty, price])
 
     # -------------------------------
     # 2. BOT TRADES
@@ -182,14 +176,21 @@ if st.button("▶️ Run Next Round"):
             action = None
             qty = 0
 
-            # 😈 Reckless hedge fund
+            # 😈 Reckless hedge fund (two-sided, destabilizing)
             if "Reckless" in bname:
-                # Always trades BIG
-                qty = 300
-                # If losing last round, doubles down
-                if len(hist) > 0 and price < hist[-1]:
-                    qty = 600
-                action = "BUY"  # always buying, creating bubbles
+                base_qty = 300
+
+                if len(hist) > 0:
+                    if price > hist[-1]:
+                        action = "BUY"
+                        qty = base_qty
+                    else:
+                        action = "SELL"
+                        qty = base_qty * 2
+                else:
+                    action = "BUY"
+                    qty = base_qty
+
             else:
                 # Momentum bot
                 if "Momentum" in bname and len(hist) > 0:
@@ -231,9 +232,7 @@ if st.button("▶️ Run Next Round"):
                 bot["cash"] += qty * price
                 sell_vol[asset] += qty
 
-            trade_log_round.append([
-                market["round"], bname, asset, action, qty, price
-            ])
+            trade_log_round.append([market["round"], bname, asset, action, qty, price])
 
     # -------------------------------
     # 3. PRICE IMPACT
@@ -243,7 +242,6 @@ if st.button("▶️ Run Next Round"):
         market["assets"][asset]["history"].append(old_price)
 
         imbalance = buy_vol[asset] - sell_vol[asset]
-
         new_price = max(1.0, old_price + imbalance / 40.0)
         market["assets"][asset]["price"] = new_price
 
@@ -279,10 +277,8 @@ with c2:
 st.subheader("🏆 Leaderboard (Humans vs Bots)")
 
 rows = []
-
 for name, h in market["humans"].items():
     rows.append({"Agent": name, "Type": "Human", "Net Worth": round(net_worth(h), 0)})
-
 for name, b in market["bots"].items():
     rows.append({"Agent": name, "Type": "Bot", "Net Worth": round(net_worth(b), 0)})
 
@@ -326,10 +322,10 @@ else:
 # =====================================================
 st.info("""
 😈 The Reckless Hedge Fund:
-• Trades huge size
-• Doubles down after losses
-• Creates bubbles and crashes
-• Sometimes wins big, sometimes destroys itself
+• Buys aggressively in rising markets (FOMO)
+• Sells violently in falling markets (panic)
+• Amplifies both bubbles and crashes
+• Sometimes wins big, sometimes self-destructs
 
-Perfect for teaching: size, leverage mentality, and fragility.
+This creates realistic instability and reflexivity.
 """)
