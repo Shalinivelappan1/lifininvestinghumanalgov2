@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
-st.set_page_config(page_title="Classroom Trading Lab (Clean Core)", layout="wide")
+st.set_page_config(page_title="Classroom Trading Lab (Humans vs Bots)", layout="wide")
 
 # =====================================================
 # INIT STATE
@@ -17,6 +18,8 @@ if "market" not in st.session_state:
         },
 
         "humans": {},
+        "bots": {},
+
         "trade_log": [],
         "pnl_history": {}
     }
@@ -29,6 +32,22 @@ if "market" not in st.session_state:
             "pos": {"ABC": 0, "XYZ": 0}
         }
         market["pnl_history"][name] = [100000.0]
+
+    # Normal bots
+    bot_names = ["Momentum Bot", "MeanReversion Bot", "Panic Bot", "Random Bot"]
+    for b in bot_names:
+        market["bots"][b] = {
+            "cash": 200000.0,
+            "pos": {"ABC": 0, "XYZ": 0}
+        }
+        market["pnl_history"][b] = [200000.0]
+
+    # Reckless hedge fund 😈
+    market["bots"]["😈 Reckless Hedge Fund"] = {
+        "cash": 1000000.0,
+        "pos": {"ABC": 0, "XYZ": 0}
+    }
+    market["pnl_history"]["😈 Reckless Hedge Fund"] = [1000000.0]
 
     st.session_state.market = market
 
@@ -47,8 +66,8 @@ def net_worth(agent):
 # =====================================================
 # TITLE
 # =====================================================
-st.title("📈 Classroom Trading Lab — Clean Core (Phase 1 + 2)")
-st.caption("📰 News moves prices immediately. ▶️ Run Round applies only human trades.")
+st.title("🤖📈 Classroom Trading Lab — Humans vs Bots (+ Reckless Fund)")
+st.caption("📰 News moves prices immediately. ▶️ Run Round = humans + bots trade.")
 
 # =====================================================
 # SIDEBAR — NEWS
@@ -106,7 +125,7 @@ for i, name in enumerate(market["humans"].keys()):
         st.markdown(f"**{name}**")
         asset = st.selectbox("Asset", ["ABC", "XYZ"], key=f"{name}_asset")
         action = st.radio("Action", ["HOLD", "BUY", "SELL"], horizontal=True, key=f"{name}_action")
-        qty = st.number_input("Qty", min_value=0, max_value=1000, value=0, step=10, key=f"{name}_qty")
+        qty = st.number_input("Qty", min_value=0, max_value=2000, value=0, step=20, key=f"{name}_qty")
 
         human_orders[name] = {
             "asset": asset,
@@ -115,7 +134,7 @@ for i, name in enumerate(market["humans"].keys()):
         }
 
 # =====================================================
-# RUN ROUND (APPLY HUMAN TRADES ONLY)
+# RUN ROUND (HUMANS + BOTS)
 # =====================================================
 if st.button("▶️ Run Next Round"):
 
@@ -125,7 +144,7 @@ if st.button("▶️ Run Next Round"):
     sell_vol = {"ABC": 0, "XYZ": 0}
 
     # -------------------------------
-    # Apply human trades
+    # 1. HUMAN TRADES
     # -------------------------------
     for team, order in human_orders.items():
         human = market["humans"][team]
@@ -152,7 +171,72 @@ if st.button("▶️ Run Next Round"):
         ])
 
     # -------------------------------
-    # Price impact (simple rule)
+    # 2. BOT TRADES
+    # -------------------------------
+    for bname, bot in market["bots"].items():
+        for asset in ["ABC", "XYZ"]:
+
+            price = market["assets"][asset]["price"]
+            hist = market["assets"][asset]["history"]
+
+            action = None
+            qty = 0
+
+            # 😈 Reckless hedge fund
+            if "Reckless" in bname:
+                # Always trades BIG
+                qty = 300
+                # If losing last round, doubles down
+                if len(hist) > 0 and price < hist[-1]:
+                    qty = 600
+                action = "BUY"  # always buying, creating bubbles
+            else:
+                # Momentum bot
+                if "Momentum" in bname and len(hist) > 0:
+                    if price > hist[-1]:
+                        action = "BUY"
+                    else:
+                        action = "SELL"
+                    qty = 50
+
+                # Mean reversion bot
+                if "MeanReversion" in bname:
+                    ref = 100 if asset == "ABC" else 200
+                    if price > 1.1 * ref:
+                        action = "SELL"; qty = 40
+                    elif price < 0.9 * ref:
+                        action = "BUY"; qty = 40
+
+                # Panic bot
+                if "Panic" in bname and len(hist) > 0:
+                    if price < 0.95 * hist[-1]:
+                        action = "SELL"; qty = 80
+
+                # Random bot
+                if "Random" in bname:
+                    if np.random.rand() > 0.5:
+                        action = "BUY"; qty = 30
+                    else:
+                        action = "SELL"; qty = 30
+
+            if action is None or qty == 0:
+                continue
+
+            if action == "BUY":
+                bot["pos"][asset] += qty
+                bot["cash"] -= qty * price
+                buy_vol[asset] += qty
+            else:
+                bot["pos"][asset] -= qty
+                bot["cash"] += qty * price
+                sell_vol[asset] += qty
+
+            trade_log_round.append([
+                market["round"], bname, asset, action, qty, price
+            ])
+
+    # -------------------------------
+    # 3. PRICE IMPACT
     # -------------------------------
     for asset in ["ABC", "XYZ"]:
         old_price = market["assets"][asset]["price"]
@@ -160,18 +244,19 @@ if st.button("▶️ Run Next Round"):
 
         imbalance = buy_vol[asset] - sell_vol[asset]
 
-        # Simple linear impact
-        new_price = max(1.0, old_price + imbalance / 50.0)
+        new_price = max(1.0, old_price + imbalance / 40.0)
         market["assets"][asset]["price"] = new_price
 
     # -------------------------------
-    # Save logs
+    # 4. SAVE LOGS & P&L
     # -------------------------------
     market["trade_log"].extend(trade_log_round)
 
-    # Save P&L history
-    for team, human in market["humans"].items():
-        market["pnl_history"][team].append(net_worth(human))
+    for name, h in market["humans"].items():
+        market["pnl_history"][name].append(net_worth(h))
+
+    for name, b in market["bots"].items():
+        market["pnl_history"][name].append(net_worth(b))
 
     market["round"] += 1
 
@@ -191,16 +276,15 @@ with c2:
 # =====================================================
 # LEADERBOARD
 # =====================================================
-st.subheader("🏆 Leaderboard (Net Worth)")
+st.subheader("🏆 Leaderboard (Humans vs Bots)")
 
 rows = []
+
 for name, h in market["humans"].items():
-    rows.append({
-        "Team": name,
-        "Net Worth": round(net_worth(h), 0),
-        "ABC Pos": h["pos"]["ABC"],
-        "XYZ Pos": h["pos"]["XYZ"]
-    })
+    rows.append({"Agent": name, "Type": "Human", "Net Worth": round(net_worth(h), 0)})
+
+for name, b in market["bots"].items():
+    rows.append({"Agent": name, "Type": "Bot", "Net Worth": round(net_worth(b), 0)})
 
 df_leader = pd.DataFrame(rows).sort_values("Net Worth", ascending=False)
 st.dataframe(df_leader, use_container_width=True)
@@ -208,14 +292,14 @@ st.dataframe(df_leader, use_container_width=True)
 # =====================================================
 # P&L SUMMARY
 # =====================================================
-st.subheader("📈 Team P&L Summary")
+st.subheader("📈 P&L Summary")
 
 pnl_rows = []
-for team, series in market["pnl_history"].items():
+for name, series in market["pnl_history"].items():
     start = series[0]
     current = series[-1]
     pnl_rows.append({
-        "Team": team,
+        "Agent": name,
         "Net Worth": round(current, 0),
         "P&L": round(current - start, 0),
         "Return %": round(100 * (current - start) / start, 2)
@@ -231,7 +315,7 @@ st.subheader("🧾 Trade Log (Last 50 Trades)")
 if len(market["trade_log"]) > 0:
     log_df = pd.DataFrame(
         market["trade_log"],
-        columns=["Round", "Team", "Asset", "Action", "Qty", "Price"]
+        columns=["Round", "Agent", "Asset", "Action", "Qty", "Price"]
     )
     st.dataframe(log_df.tail(50), use_container_width=True)
 else:
@@ -241,13 +325,11 @@ else:
 # NOTE
 # =====================================================
 st.info("""
-This is the clean core version:
+😈 The Reckless Hedge Fund:
+• Trades huge size
+• Doubles down after losses
+• Creates bubbles and crashes
+• Sometimes wins big, sometimes destroys itself
 
-• News moves prices immediately
-• ▶️ Run Round applies only human trades
-• Simple price impact from order imbalance
-• Trade log + P&L history + leaderboard
-• No bots, no risk rules, no circuit breakers
-
-Stable, predictable, perfect for classroom use.
+Perfect for teaching: size, leverage mentality, and fragility.
 """)
