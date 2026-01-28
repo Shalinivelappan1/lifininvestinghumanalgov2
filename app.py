@@ -14,8 +14,8 @@ if "market" not in st.session_state:
         "liquidity_freeze": False,
 
         "assets": {
-            "ABC": {"price": 100.0, "history": [], "halted": False, "cb_ref": 100.0, "pending_shock": 0.0},
-            "XYZ": {"price": 200.0, "history": [], "halted": False, "cb_ref": 200.0, "pending_shock": 0.0},
+            "ABC": {"price": 100.0, "history": [], "halted": False, "cb_ref": 100.0},
+            "XYZ": {"price": 200.0, "history": [], "halted": False, "cb_ref": 200.0},
         },
 
         # Risk controls
@@ -72,8 +72,8 @@ def risk_used(agent):
 # =====================================================
 # TITLE
 # =====================================================
-st.title("🤖📈 Human vs Algorithm Market Lab — Risk Controlled")
-st.caption("Developed by Prof.Shalini Velappan, IIM Trichy.")
+st.title("🤖📈 Human vs Algorithm Market Lab — Risk Controlled (Stable)")
+st.caption("📰 News moves prices immediately. ▶️ Trading reacts when you run the round.")
 
 # =====================================================
 # SIDEBAR — POLICY & RISK CONTROLS
@@ -82,28 +82,48 @@ st.sidebar.header("🏛️ Policy & Shock Controls")
 
 selected_asset = st.sidebar.selectbox("Select Asset", ["ABC", "XYZ"])
 
+# -------------------------------
+# NEWS SHOCKS (APPLY IMMEDIATELY)
+# -------------------------------
 if st.sidebar.button("🚨 Bad News (-10%)"):
-    market["assets"][selected_asset]["pending_shock"] = -0.10
+    a = market["assets"][selected_asset]
+    a["history"].append(a["price"])
+    a["price"] *= 0.90
+    a["cb_ref"] = a["price"]
+    a["halted"] = False
 
 if st.sidebar.button("✅ Good News (+10%)"):
-    market["assets"][selected_asset]["pending_shock"] = +0.10
+    a = market["assets"][selected_asset]
+    a["history"].append(a["price"])
+    a["price"] *= 1.10
+    a["cb_ref"] = a["price"]
+    a["halted"] = False
 
 if st.sidebar.button("💣 Flash Crash (-25%)"):
-    market["assets"][selected_asset]["pending_shock"] = -0.25
+    a = market["assets"][selected_asset]
+    a["history"].append(a["price"])
+    a["price"] *= 0.75
+    a["cb_ref"] = a["price"]
+    a["halted"] = False
 
 st.sidebar.divider()
 
+# Liquidity freeze
 if st.sidebar.button("🧊 Toggle Liquidity Freeze"):
     market["liquidity_freeze"] = not market["liquidity_freeze"]
 
+# Central bank (immediate)
 if st.sidebar.button("🏦 Central Bank Intervention (+15% ALL)"):
     for a in market["assets"]:
-        market["assets"][a]["price"] *= 1.15
-        market["assets"][a]["halted"] = False
-        market["assets"][a]["cb_ref"] = market["assets"][a]["price"]
+        asset = market["assets"][a]
+        asset["history"].append(asset["price"])
+        asset["price"] *= 1.15
+        asset["halted"] = False
+        asset["cb_ref"] = asset["price"]
 
 st.sidebar.divider()
 
+# Resume trading
 if st.sidebar.button("🟢 Resume All Trading"):
     for a in market["assets"]:
         market["assets"][a]["halted"] = False
@@ -111,6 +131,7 @@ if st.sidebar.button("🟢 Resume All Trading"):
 
 st.sidebar.divider()
 
+# Risk controls
 st.sidebar.header("🧠 Risk Controls")
 
 market["position_limit"] = st.sidebar.slider(
@@ -125,6 +146,7 @@ market["risk_budget_pct"] = st.sidebar.slider(
 
 st.sidebar.divider()
 
+# Reset
 if st.sidebar.button("🔁 Reset Simulation"):
     for k in list(st.session_state.keys()):
         del st.session_state[k]
@@ -158,43 +180,20 @@ for i, name in enumerate(market["humans"].keys()):
         human_orders[name] = {"asset": asset, "action": action, "qty": qty}
 
 # =====================================================
-# RUN ROUND
+# RUN ROUND (TRADING ONLY)
 # =====================================================
 if st.button("▶️ Run Next Market Round"):
 
     trade_log_round = []
 
     # ----------------------------------
-    # 1. APPLY NEWS SHOCKS (DOMINANT)
-    # ----------------------------------
-    news_applied = {"ABC": False, "XYZ": False}
-
-    for a in market["assets"]:
-        shock = market["assets"][a]["pending_shock"]
-        if shock != 0:
-            # Save history
-            market["assets"][a]["history"].append(market["assets"][a]["price"])
-
-            # Apply shock
-            market["assets"][a]["price"] *= (1 + shock)
-
-            # Reset CB reference
-            market["assets"][a]["cb_ref"] = market["assets"][a]["price"]
-
-            # Mark news applied
-            news_applied[a] = True
-
-            # Reset shock
-            market["assets"][a]["pending_shock"] = 0.0
-
-    # ----------------------------------
-    # 2. COLLECT ORDER FLOW
+    # 1. COLLECT ORDER FLOW
     # ----------------------------------
     buy_vol = {"ABC": 0, "XYZ": 0}
     sell_vol = {"ABC": 0, "XYZ": 0}
 
     # ----------------------------------
-    # 3. HUMAN ORDERS (WITH HARD LIMITS)
+    # 2. HUMAN ORDERS (WITH HARD LIMITS)
     # ----------------------------------
     if not market["liquidity_freeze"]:
 
@@ -241,7 +240,7 @@ if st.button("▶️ Run Next Market Round"):
             trade_log_round.append([market["round"], hname, asset, action, qty, price, "EXECUTED", "OK"])
 
     # ----------------------------------
-    # 4. BOTS
+    # 3. BOTS
     # ----------------------------------
     for bname, bot in market["bots"].items():
         for asset in ["ABC", "XYZ"]:
@@ -304,13 +303,9 @@ if st.button("▶️ Run Next Market Round"):
                     trade_log_round.append([market["round"], bname, asset, "BUY", qty, price, "EXECUTED", "TREND"])
 
     # ----------------------------------
-    # 5. PRICE FORMATION (ONLY IF NO NEWS)
+    # 4. PRICE FORMATION + CIRCUIT BREAKER
     # ----------------------------------
     for asset in ["ABC", "XYZ"]:
-
-        if news_applied.get(asset, False):
-            continue
-
         old_price = market["assets"][asset]["price"]
         market["assets"][asset]["history"].append(old_price)
 
@@ -328,10 +323,9 @@ if st.button("▶️ Run Next Market Round"):
             market["assets"][asset]["cb_ref"] = new_price
 
     # ----------------------------------
-    # 6. SAVE TRADE LOG
+    # 5. SAVE TRADE LOG
     # ----------------------------------
     market["trade_log"].extend(trade_log_round)
-
     market["round"] += 1
 
 # =====================================================
@@ -379,12 +373,12 @@ else:
 # TEACHING NOTE
 # =====================================================
 st.info("""
-Guaranteed behavior:
-• Good news → price up that round
-• Bad news → price down that round
-• Flash crash → big down move
-• Trading reacts NEXT round
-• Liquidity freeze → no trading
-• Circuit breaker → halts
-• Risk & position limits → hard blocked trades
+Now guaranteed:
+• Click Bad News → price drops immediately
+• Click Good News → price rises immediately
+• Click Flash Crash → price crashes immediately
+• ▶️ Run Next Market Round = only trading reactions
+• Liquidity freeze works
+• Circuit breaker works
+• Risk & position limits are hard enforced
 """)
